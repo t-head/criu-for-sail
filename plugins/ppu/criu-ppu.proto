@@ -1,0 +1,76 @@
+syntax = "proto2";
+
+message proto_device {
+	required uint32 dev_index = 1;
+	required uint32 actual_ppuid = 2;
+}
+
+message proto_bo_prb_range {
+	required uint32 type = 1;
+	required uint64 offset = 2;
+	required uint64 alias = 3;
+	required uint64 size = 4;
+}
+
+message proto_bo {
+	required uint32 dev_index = 1;
+	required uint64 addr = 2;
+	required uint64 size = 3;
+	required uint64 offset = 4;
+	required uint64 sema_addr = 5;
+	required uint64 sema_offset = 6;
+	required uint32 rst_flags = 7;
+	required uint32 type = 8;
+	repeated proto_bo_prb_range prb_ranges = 9;
+}
+
+message proto_queue {
+	required uint32 dev_index = 1;
+	required uint64 addr = 2;
+	required uint64 size = 3;
+	required uint64 offset = 4;
+}
+
+message proto_qw {
+	required uint32 dev_index = 1;
+	required uint64 addr = 2;
+	required uint64 size = 3;
+	required uint64 offset = 4;
+}
+
+message proto_esr {
+	required uint32 dev_index = 1;
+	required uint64 addr = 2;
+	required uint64 size = 3;
+	required uint64 offset = 4;
+}
+
+message proto_mmio {
+	required uint32 dev_index = 1;
+	required uint64 addr = 2;
+	required uint64 size = 3;
+	required uint64 offset = 4;
+}
+
+message proto_criu {
+	required uint32 pid = 1;
+	required uint32 num_device = 2;
+	repeated proto_device devices = 3;
+	required uint64 num_bo = 4;
+	repeated proto_bo bos = 5;
+	required uint32 num_queues = 6;
+	repeated proto_queue queues = 7;
+	required uint32 num_qw = 8;
+	repeated proto_qw qw = 9;
+	required uint32 num_esr = 10;
+	repeated proto_esr esr = 11;
+	repeated proto_mmio mmio = 12;
+	required uint32 num_mmio = 13;
+	required bytes priv_data = 14;
+	required uint32 num_prb = 15;
+}
+
+message proto_node {
+	required string name = 1;
+	required uint32 share_handle = 2;
+}
