@@ -29,9 +29,11 @@
 #include "proc_parse.h"
 #include "seize.h"
 #include "files.h"
+#include "cr_options.h"
 
 #define IPC_CRIU_CMD_CHECKPOINT_MEMORY 1
 #define IPC_CRIU_CMD_RESTORE_MEMORY    2
+#define IPC_CRIU_CMD_RELEASE_MEMORY    3
 
 #define IPC_ACK_SUCCESS 1
 #define IPC_ACK_FAIL	2
@@ -59,6 +61,39 @@ static int g_node_count = 0;
 
 /* Restore from ppu idx*/
 static uint32_t g_ppu_idx = 0;
+
+static LIST_HEAD(g_ppu_pids);
+struct pid_entry {
+	struct list_head list;
+	int pid;
+};
+
+static int ppu_pids_add_tail(int pid)
+{
+	struct pid_entry *pe = NULL;
+
+	pe = xzalloc(sizeof(*pe));
+	if (!pe) {
+		return -ENOMEM;
+	}
+
+	pe->pid = pid;
+
+	list_add_tail(&pe->list, &g_ppu_pids);
+
+	return 0;
+}
+
+static void free_ppu_pids()
+{
+	struct pid_entry *ent = NULL;
+	struct pid_entry *tmp = NULL;
+
+	list_for_each_entry_safe(ent, tmp, &g_ppu_pids, list) {
+		list_del(&ent->list);
+		xfree(ent);
+	}
+}
 
 static void free_dev_list(struct list_head *head)
 {
@@ -141,6 +176,43 @@ static int resume_restore_thread(int restore_tid, k_rtsigset_t *save_sigset)
 	return 0;
 }
 
+int ppu_plugin_request_process(int pid, uint64_t code) {
+	uint64_t ack;
+	int restore_tid, read_fd, write_fd;
+	int ret, int_ret;
+	k_rtsigset_t save_sigset;
+
+	ret = ppu_get_criu_restore_tid(pid, &restore_tid, &read_fd, &write_fd);
+	if (ret) {
+		return ret;
+	}
+
+	ret = resume_restore_thread(restore_tid, &save_sigset);
+	if (ret) {
+		goto out_close_fd;
+	}
+
+	write(write_fd, &code, sizeof(code));
+	ret = read_with_timeout(read_fd, &ack, sizeof(ack), g_ipc_timeout);
+	if (ret == sizeof(ack) && ack == IPC_ACK_SUCCESS) {
+		ret = 0;
+	} else {
+		ret = -1;
+		ppu_err("Failed to get restore process %d ack", pid);
+	}
+
+	int_ret = interrupt_restore_thread(restore_tid, &save_sigset);
+	if (ret == 0) {
+		ret = int_ret;
+	}
+
+out_close_fd:
+	close(read_fd);
+	close(write_fd);
+
+	return ret;
+}
+
 /**********************************************************************************************************************/
 /***************************************** ppu_plugin_init and ppu_plugin_fini ****************************************/
 /**********************************************************************************************************************/
@@ -165,6 +237,8 @@ int ppu_plugin_init(int stage)
 		/* Ignore error and use 0 index if failed*/
 		ppu_getenv_value("PPU_CRIU_RESTORE_START_INDEX", &g_ppu_idx);
 		ppu_info("Set restore from ppu index %d", g_ppu_idx);
+	} else if (stage == CR_PLUGIN_STAGE__DUMP) {
+		INIT_LIST_HEAD(&g_ppu_pids);
 	}
 
 	return 0;
@@ -172,7 +246,38 @@ int ppu_plugin_init(int stage)
 
 void ppu_plugin_fini(int stage, int ret)
 {
-	ppu_info("Finished  %s (PPU)", CR_PLUGIN_DESC.name);
+	ppu_info("Finished %s (PPU), stage %d, ret %d", CR_PLUGIN_DESC.name, stage, ret);
+
+	if (stage == CR_PLUGIN_STAGE__DUMP && (opts.final_state == TASK_ALIVE || ret != 0)) {
+		struct pid_entry* pe = NULL;
+		int ppu_fd = -1;
+
+		ppu_fd = open(PPU_CHAR_NODE_NAME, O_RDWR);
+		if (ppu_fd < 0) {
+			ppu_err("Failed to open %s", PPU_CHAR_NODE_NAME);
+			return;
+		}
+
+		list_for_each_entry(pe, &g_ppu_pids, list) {
+			ppu_info("resume process %d", pe->pid);
+
+			ret = ppu_plugin_request_process(pe->pid, IPC_CRIU_CMD_RELEASE_MEMORY);
+			if (ret) {
+				continue;
+			}
+
+			ret = ppu_resume_process(ppu_fd, pe->pid);
+			if (ret) {
+				ppu_err("Failed to resume process %d", pe->pid);
+			}
+		}
+
+		close(ppu_fd);
+	}
+
+	if (stage == CR_PLUGIN_STAGE__DUMP) {
+		free_ppu_pids();
+	}
 }
 
 CR_PLUGIN_REGISTER("ppu_plugin", ppu_plugin_init, ppu_plugin_fini)
@@ -198,6 +303,16 @@ int ppu_plugin_pause_devices(int pid)
 
 	close(fd);
 
+	if (ret) {
+		ppu_err("PAUSE_DEVICES failed on %d", pid);
+		return ret;
+	}
+
+	if (ppu_pids_add_tail(pid)) {
+		ppu_err("unable to track paused pid %d\n", pid);
+		return -1;
+	}
+
 	return ret;
 }
 CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__PAUSE_DEVICES, ppu_plugin_pause_devices)
@@ -208,42 +323,12 @@ CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__PAUSE_DEVICES, ppu_plugin_pause_devices)
 
 int ppu_plugin_checkpoint_devices(int pid)
 {
-	int ret = 0, int_ret = 0;
-	int restore_tid = 0;
-	int read_fd, write_fd;
-	k_rtsigset_t save_sigset;
-	const uint64_t code = IPC_CRIU_CMD_CHECKPOINT_MEMORY;
-	uint64_t ack;
-
+	int ret = 0;
 	ppu_info("Checkpoint target pid = %d", pid);
 
-	ret = ppu_get_criu_restore_tid(pid, &restore_tid, &read_fd, &write_fd);
-	if (ret) {
-		ppu_info("Failed to get restore process %d restore_tid/read_fd/write_fd", pid);
-		return 0;
-	}
+	ret = ppu_plugin_request_process(pid, IPC_CRIU_CMD_CHECKPOINT_MEMORY);
 
-	ret = resume_restore_thread(restore_tid, &save_sigset);
-	if (ret) {
-		goto out_close_translate_fd;
-	}
-
-	write(write_fd, &code, sizeof(code));
-	ret = read_with_timeout(read_fd, &ack, sizeof(ack), g_ipc_timeout);
-	if (ret == sizeof(ack) && ack == IPC_ACK_SUCCESS) {
-		ret = 0;
-	} else {
-		ret = -1;
-		ppu_err("Failed to get restore process %d ack", pid);
-	}
-
-	int_ret = interrupt_restore_thread(restore_tid, &save_sigset);
-
-out_close_translate_fd:
-	close(read_fd);
-	close(write_fd);
-
-	return ret != 0 ? ret : int_ret;
+	return ret == -2 ? 0 : ret;
 }
 CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__CHECKPOINT_DEVICES, ppu_plugin_checkpoint_devices)
 
@@ -1824,13 +1909,8 @@ CR_PLUGIN_REGISTER_HOOK(CR_PLUGIN_HOOK__UPDATE_VMA_MAP, ppu_plugin_update_vmamap
 
 int ppu_plugin_resume_devices_late(int pid)
 {
-	int ret = 0, int_ret = 0;
-	int restore_tid;
+	int ret = 0;
 	int ppu_fd;
-	int read_fd, write_fd;
-	k_rtsigset_t save_sigset;
-	const uint64_t code = IPC_CRIU_CMD_RESTORE_MEMORY;
-	uint64_t ack;
 
 	ppu_info("Resume target pid = %d", pid);
 
@@ -1846,44 +1926,24 @@ int ppu_plugin_resume_devices_late(int pid)
 		goto out_close_ppu_fd;
 	}
 
-	ret = ppu_get_criu_restore_tid(pid, &restore_tid, &read_fd, &write_fd);
-	if (ret == 0) {
-		ret = resume_restore_thread(restore_tid, &save_sigset);
-		if (ret) {
-			goto out_close_translate_fd;
-		}
-
-		write(write_fd, &code, sizeof(code));
-		ret = read_with_timeout(read_fd, &ack, sizeof(ack), g_ipc_timeout);
-		if (ret == sizeof(ack) && ack == IPC_ACK_SUCCESS) {
-			ret = 0;
-		} else {
-			ret = -1;
-			ppu_err("Failed to get restore process %d ack", pid);
-		}
-
-		int_ret = interrupt_restore_thread(restore_tid, &save_sigset);
-		ret = ret != 0 ? ret : int_ret;
-
-out_close_translate_fd:
-		close(read_fd);
-		close(write_fd);
-
-		if (ret)
-			goto out_close_ppu_fd;
-	} else {
-		ppu_info("Failed to get restore process %d restore_tid/read_fd/write_fd", pid);
+	ret = ppu_plugin_request_process(pid, IPC_CRIU_CMD_RESTORE_MEMORY);
+	if (ret == -1) {
+		ppu_err("Failed to restore process %d memory", pid);
+	}
+	if (ret) {
+		goto out_close_ppu_fd;
 	}
 
 	ret = ppu_resume_process(ppu_fd, pid);
 	if (ret) {
 		ppu_err("Failed to resume process %d", pid);
+		goto out_close_ppu_fd;
 	}
 
 out_close_ppu_fd:
 	close(ppu_fd);
 
-	ppu_info("Resume finished");
+	ppu_info("Resume finished, ret %d", ret);
 
 	return ret;
 }
