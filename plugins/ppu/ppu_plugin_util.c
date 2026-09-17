@@ -232,6 +232,7 @@ int ppu_get_criu_restore_tid(int pid, int *p_tid, int *p_read_fd, int *p_write_f
 	snprintf(path_task, sizeof(path_task), "/proc/%d/task", pid);
 	DIR *d = opendir(path_task);
 	if (!d) {
+		ppu_err("Failed to open %s", path_task);
 		return -1;
 	}
 
@@ -265,7 +266,8 @@ int ppu_get_criu_restore_tid(int pid, int *p_tid, int *p_read_fd, int *p_write_f
 
 			int read_fd = open(path_fd, O_RDONLY | O_CLOEXEC);
 			if (read_fd == -1) {
-				continue;
+				ppu_err("Failed to open %s", path_fd);
+				return -1;
 			}
 			*p_read_fd = read_fd;
 		}
@@ -282,7 +284,8 @@ int ppu_get_criu_restore_tid(int pid, int *p_tid, int *p_read_fd, int *p_write_f
 					close(*p_read_fd);
 					*p_read_fd = -1;
 				}
-				continue;
+				ppu_err("Failed to open %s", path_fd);
+				return -1;
 			}
 			*p_write_fd = write_fd;
 		}
@@ -296,7 +299,9 @@ int ppu_get_criu_restore_tid(int pid, int *p_tid, int *p_read_fd, int *p_write_f
 	}
 
 	closedir(d);
-	return -1;
+
+	ppu_info("Skipping device handling for PID %d", pid);
+	return -2;
 }
 
 int read_with_timeout(int fd, void *buf, int n, int timeout_ms)
