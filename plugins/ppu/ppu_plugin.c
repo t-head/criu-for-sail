@@ -224,6 +224,12 @@ int ppu_plugin_init(int stage)
 
 	ppu_info("Initialized:  %s (PPU)", CR_PLUGIN_DESC.name);
 
+	g_ppu_char_fd = open(PPU_CHAR_NODE_NAME, O_RDWR);
+	if (g_ppu_char_fd < 0) {
+		ppu_err("Failed to open " PPU_CHAR_NODE_NAME);
+		return -1;
+	}
+
 	ret = ppu_getenv_value("PPU_CRIU_LOG_LEVEL", &log_level);
 	if (!ret) {
 		ppu_set_log_level(log_level);
@@ -237,6 +243,14 @@ int ppu_plugin_init(int stage)
 		/* Ignore error and use 0 index if failed*/
 		ppu_getenv_value("PPU_CRIU_RESTORE_START_INDEX", &g_ppu_idx);
 		ppu_info("Set restore from ppu index %d", g_ppu_idx);
+
+		ret = ppu_restore_ctx_create(g_ppu_char_fd);
+		if (ret) {
+			ppu_err("Failed to prepare restore runtime");
+			close(g_ppu_char_fd);
+			g_ppu_char_fd = -1;
+			return -1;
+		}
 	} else if (stage == CR_PLUGIN_STAGE__DUMP) {
 		INIT_LIST_HEAD(&g_ppu_pids);
 	}
@@ -250,13 +264,6 @@ void ppu_plugin_fini(int stage, int ret)
 
 	if (stage == CR_PLUGIN_STAGE__DUMP && (opts.final_state == TASK_ALIVE || ret != 0)) {
 		struct pid_entry* pe = NULL;
-		int ppu_fd = -1;
-
-		ppu_fd = open(PPU_CHAR_NODE_NAME, O_RDWR);
-		if (ppu_fd < 0) {
-			ppu_err("Failed to open %s", PPU_CHAR_NODE_NAME);
-			return;
-		}
 
 		list_for_each_entry(pe, &g_ppu_pids, list) {
 			ppu_info("resume process %d", pe->pid);
@@ -266,18 +273,18 @@ void ppu_plugin_fini(int stage, int ret)
 				continue;
 			}
 
-			ret = ppu_resume_process(ppu_fd, pe->pid);
+			ret = ppu_resume_process(g_ppu_char_fd, pe->pid);
 			if (ret) {
 				ppu_err("Failed to resume process %d", pe->pid);
 			}
 		}
-
-		close(ppu_fd);
 	}
 
 	if (stage == CR_PLUGIN_STAGE__DUMP) {
 		free_ppu_pids();
 	}
+
+	close(g_ppu_char_fd);
 }
 
 CR_PLUGIN_REGISTER("ppu_plugin", ppu_plugin_init, ppu_plugin_fini)

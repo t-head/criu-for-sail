@@ -245,3 +245,15 @@ int ppu_get_share_objects_fd_from_handle(int fd, uint32_t handle, int *share_fd)
 
 	return ret;
 }
+
+int ppu_restore_ctx_create(int fd)
+{
+	union ppu_criu_args args = {};
+
+	args.in.op = PPU_CRIU_RESTORE_CTX_CREATE;
+
+	if (ppu_ioctl(fd, PPU_IOC_CRIU_OP, &args) != 0)
+		return -1;
+
+	return 0;
+}

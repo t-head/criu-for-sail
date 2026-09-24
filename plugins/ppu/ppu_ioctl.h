@@ -65,6 +65,7 @@ struct ppu_criu_util {
 #define PPU_CRIU_RESTORE_MEMORY		     10
 #define PPU_CRIU_GET_MEMORY_USAGE	     11
 #define PPU_CRIU_CREATE_SHARE_FD_FROM_HANDLE 12
+#define PPU_CRIU_RESTORE_CTX_CREATE          13
 
 struct ppu_criu_in {
 	__u32 op;

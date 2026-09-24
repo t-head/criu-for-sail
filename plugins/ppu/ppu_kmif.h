@@ -45,5 +45,6 @@ int ppu_resume_process(int fd, uint32_t pid);
 int ppu_pause_devices(int fd, uint32_t pid);
 int ppu_get_share_objects_handle_from_fd(int fd, int share_fd, uint32_t *handle);
 int ppu_get_share_objects_fd_from_handle(int fd, uint32_t handle, int* share_fd);
+int ppu_restore_ctx_create(int fd);
 
 #endif
