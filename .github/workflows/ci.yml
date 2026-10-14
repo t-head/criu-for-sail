@@ -1,0 +1,129 @@
+name: CI Pipeline
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  precheck:
+    name: Pre-check
+    uses: t-head/.github/.github/workflows/user-precheck.yml@main
+
+  smoke-test:
+    name: Smoke Test
+    needs: precheck
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            gcc-multilib \
+            pkg-config \
+            libprotobuf-dev \
+            libprotobuf-c-dev \
+            protobuf-compiler \
+            protobuf-c-compiler \
+            python3-protobuf \
+            iproute2 \
+            libnl-3-dev \
+            libnl-route-3-dev \
+            libnet-dev \
+            libcap-dev \
+            uuid-dev \
+            libaio-dev \
+            libbsd-dev \
+            libgnutls28-dev \
+            libnftables-dev \
+            asciidoctor
+
+      - name: Compile CRIU
+        run: make -j"$(nproc)" criu
+
+      - name: Verify CRIU output
+        run: test -x criu/criu
+
+  ai-code-review:
+    name: AI Code Review (Copilot Gate)
+    needs: precheck
+    uses: t-head/.github/.github/workflows/ai-code-review.yml@main
+    secrets: inherit
+
+  human-review:
+    name: Human Review Gate
+    needs: [smoke-test, ai-code-review]
+    uses: t-head/.github/.github/workflows/human-review.yml@main
+    secrets: inherit
+
+  ci:
+    name: Full CI
+    needs: human-review
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            gcc-multilib \
+            pkg-config \
+            libprotobuf-dev \
+            libprotobuf-c-dev \
+            protobuf-compiler \
+            protobuf-c-compiler \
+            python3-protobuf \
+            iproute2 \
+            libnl-3-dev \
+            libnl-route-3-dev \
+            libnet-dev \
+            libcap-dev \
+            uuid-dev \
+            libaio-dev \
+            libbsd-dev \
+            libgnutls28-dev \
+            libnftables-dev \
+            asciidoctor
+
+      - name: Compile CRIU
+        run: make criu -j"$(nproc)"
+
+      - name: Compile PPU plugin
+        run: make ppu_plugin -j"$(nproc)"
+
+      - name: Verify build outputs
+        run: |
+          test -x criu/criu
+          test -f plugins/ppu/ppu_plugin.so
+          criu/criu --version
+          file plugins/ppu/ppu_plugin.so
+
+      - name: Package build outputs
+        run: |
+          tar -czf output.tar.gz \
+            criu/criu \
+            plugins/ppu/ppu_plugin.so
+
+      - name: Upload build outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: criu-x86_64-ubuntu2404
+          path: output.tar.gz
+          if-no-files-found: error
+          retention-days: 7
