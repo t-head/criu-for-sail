@@ -788,8 +788,30 @@ static int ppu_dump_device_node(int fd, int id, struct stat *st)
 		g_char_node_id = id;
 		g_node_count = 0;
 	} else if (strncmp(name, ANON_INODE_PREFIX, strlen(ANON_INODE_PREFIX)) == 0) {
-		ppu_err("fd%d -> %s is not supported yet", fd, name);
-		return -1;
+		if (strcmp(name + strlen(ANON_INODE_PREFIX), PPU_IPC_FD_NAME) == 0) {
+			int ppu_fd = -1;
+			uint32_t handle = 0;
+
+			ppu_fd = open(PPU_CHAR_NODE_NAME, O_RDWR);
+			if (ppu_fd < 0) {
+				ppu_err("Failed to open " PPU_CHAR_NODE_NAME "");
+				ret = -1;
+				goto err_pb_alloc;
+			}
+
+			ret = ppu_get_share_objects_handle_from_fd(ppu_fd, fd, &handle);
+			close(ppu_fd);
+			if (ret) {
+				ppu_err("Failed to get share object's handle from fd %d", fd);
+				goto err_pb_alloc;
+			}
+			pb_node.share_handle = handle;
+
+			inc_node_count = false;
+		} else {
+			ppu_err("fd%d -> %s is not supported yet", fd, name);
+			return -1;
+		}
 	}
 
 	len = strlen(name) + 1;
@@ -1654,8 +1676,9 @@ static int ppu_restore_device_node(int id)
 			xfree(dev);
 		}
 	} else if (strcmp(pb_node->name, ANON_INODE_PREFIX PPU_IPC_FD_NAME) == 0) {
-		ppu_err(ANON_INODE_PREFIX PPU_IPC_FD_NAME " is not supported yet");
-		ret = -EINVAL;
+		ret = ppu_get_share_objects_fd_from_handle(g_ppu_char_fd, pb_node->share_handle, &fd);
+		if (ret)
+			ppu_err("Failed to get share object's fd from handle %d", pb_node->share_handle);
 		goto out;
 	} else {
 		strncpy(name, pb_node->name, sizeof(name));
